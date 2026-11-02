@@ -1,0 +1,8 @@
+**/node_modules
+**/vendor
+**/.next
+**/.git
+**/.env
+**/.env.local
+backend/storage/logs/*
+docker/db/backups/*.sql.gz

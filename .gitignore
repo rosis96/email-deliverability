@@ -1,0 +1,26 @@
+# Dependencies
+**/node_modules
+backend/vendor
+
+# Env
+.env
+backend/.env
+frontend/.env.local
+!**/.env.example
+
+# Build output
+frontend/.next
+frontend/out
+backend/storage/*.key
+backend/storage/logs/*.log
+backend/storage/framework/cache/*
+backend/storage/framework/sessions/*
+backend/storage/framework/views/*
+
+# Backups
+docker/db/backups/*.sql.gz
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.log

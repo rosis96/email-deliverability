@@ -1,0 +1,115 @@
+# RevCadence Deliverability OS — local/dev orchestration
+# Usage: docker compose up --build
+# All runtime versions (PHP 8.3, Composer, PostgreSQL 16, Node) are pinned here,
+# independent of whatever is installed on the host.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: revcadence-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-revcadence}
+      POSTGRES_USER: ${DB_USERNAME:-revcadence}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+      - ./docker/db/backups:/backups
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-revcadence} -d ${DB_DATABASE:-revcadence}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    container_name: revcadence-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      CONTAINER_ROLE: app
+    volumes:
+      - ./backend:/var/www/html
+      - backend_vendor:/var/www/html/vendor
+    expose:
+      - "9000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: revcadence-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+    volumes:
+      - ./backend:/var/www/html
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${BACKEND_PORT:-8000}:80"
+
+  queue:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    container_name: revcadence-queue
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      CONTAINER_ROLE: queue
+    volumes:
+      - ./backend:/var/www/html
+      - backend_vendor:/var/www/html/vendor
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    container_name: revcadence-scheduler
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      CONTAINER_ROLE: scheduler
+    volumes:
+      - ./backend:/var/www/html
+      - backend_vendor:/var/www/html/vendor
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    container_name: revcadence-frontend
+    restart: unless-stopped
+    depends_on:
+      - nginx
+    environment:
+      # Browser talks to nginx-exposed API on the host port.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api}
+      # Server-side (RSC) calls can reach nginx over the compose network.
+      INTERNAL_API_URL: http://nginx:80/api
+      NODE_ENV: development
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    command: sh -c "npm install && npm run dev"
+
+volumes:
+  dbdata:
+  backend_vendor:
+  frontend_node_modules:
