@@ -45,9 +45,16 @@ return new class extends Migration
             $table->timestamps();
             $table->softDeletes();   // historical batches are never hard-deleted
 
-            $table->foreign('replacement_batch_id')->references('id')->on('batches')->nullOnDelete();
             $table->index(['workspace_id', 'provider_type']);
             $table->index('phase');
+        });
+
+        // Self-referencing FK added AFTER the table exists. Postgres requires the
+        // referenced key (batches.id PK) to be present before the constraint is
+        // created; doing it inline in Schema::create fails on Postgres (SQLite,
+        // used in tests, does not enforce this and so never surfaced it).
+        Schema::table('batches', function (Blueprint $table) {
+            $table->foreign('replacement_batch_id')->references('id')->on('batches')->nullOnDelete();
         });
     }
 
