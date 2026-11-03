@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BatchController;
 use App\Http\Controllers\Api\DailyActivityController;
 use App\Http\Controllers\Api\DashboardController;
+use App\Http\Controllers\Api\InstantlyAccountController;
 use App\Http\Controllers\Api\IntegrationController;
 use App\Http\Controllers\Api\PlacementTestController;
 use App\Http\Controllers\Api\ProblemController;
@@ -47,6 +48,12 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/approvals', [ApprovalController::class, 'index']);
 
+    // --- Instantly Email Accounts: live reads (any authenticated role) ---
+    Route::get('/instantly/workspaces', [InstantlyAccountController::class, 'workspaces']);
+    Route::get('/instantly/workspaces/{workspace}/accounts', [InstantlyAccountController::class, 'index']);
+    Route::get('/instantly/workspaces/{workspace}/tags', [InstantlyAccountController::class, 'tags']);
+    Route::get('/instantly/workspaces/{workspace}/account', [InstantlyAccountController::class, 'show']);
+
     // --- Operational writes (super_admin, deliverability_manager, operator) ---
     Route::middleware('role:super_admin,deliverability_manager,operator')->group(function () {
         Route::post('/batches', [BatchController::class, 'store']);
@@ -69,6 +76,12 @@ Route::middleware('auth:sanctum')->group(function () {
         // Any non-viewer can REQUEST an approval.
         Route::post('/approvals', [ApprovalController::class, 'store']);
         Route::post('/approvals/{approval}/execute', [ApprovalController::class, 'execute']);
+
+        // Instantly Email Accounts: direct writes to Instantly (audit-logged).
+        Route::patch('/instantly/workspaces/{workspace}/account', [InstantlyAccountController::class, 'update']);
+        Route::post('/instantly/workspaces/{workspace}/account/pause', [InstantlyAccountController::class, 'pause']);
+        Route::post('/instantly/workspaces/{workspace}/account/resume', [InstantlyAccountController::class, 'resume']);
+        Route::post('/instantly/workspaces/{workspace}/account/warmup', [InstantlyAccountController::class, 'warmup']);
     });
 
     // --- Decisions restricted to managers/admins ---

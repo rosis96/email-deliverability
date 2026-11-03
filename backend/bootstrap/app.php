@@ -14,6 +14,10 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Behind Railway's (or any) load balancer, trust the forwarding proxy so
+        // the request scheme (https) and client IP (audit logs) are correct.
+        $middleware->trustProxies(at: '*');
+
         // The SPA authenticates with Sanctum bearer tokens (not stateful cookies).
         // Role-based access control alias: ->middleware('role:super_admin,deliverability_manager')
         $middleware->alias([
