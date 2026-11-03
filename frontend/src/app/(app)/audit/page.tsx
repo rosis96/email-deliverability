@@ -10,6 +10,7 @@ interface Log {
   action: string;
   entity_type: string | null;
   entity_id: string | null;
+  entity_label: string | null;
   created_at: string;
   user?: { name: string } | null;
 }
@@ -32,7 +33,7 @@ export default function AuditPage() {
                 <Td className="text-[var(--text-muted)]">{dateTime(l.created_at)}</Td>
                 <Td>{l.user?.name ?? "system"}</Td>
                 <Td><Badge tone="neutral">{label(l.action.replace(/\./g, "_"))}</Badge></Td>
-                <Td className="text-xs text-[var(--text-muted)]">{l.entity_type ?? "—"}</Td>
+                <Td className="text-xs text-[var(--text-muted)]">{l.entity_label ?? l.entity_type ?? "—"}</Td>
               </tr>
             ))}
             {(!data || data.data.length === 0) && <tr><Td className="py-8 text-center text-[var(--text-muted)]">No audit entries yet.</Td></tr>}

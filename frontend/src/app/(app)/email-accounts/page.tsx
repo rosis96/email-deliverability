@@ -89,6 +89,7 @@ export default function EmailAccountsPage() {
 
   const [workspaces, setWorkspaces] = useState<InstantlyWorkspaceRef[]>([]);
   const [ws, setWs] = useState<string>("");
+  const [wsLoading, setWsLoading] = useState(true);
   const [wsError, setWsError] = useState<string | null>(null);
 
   const [tags, setTags] = useState<InstantlyTag[]>([]);
@@ -111,13 +112,23 @@ export default function EmailAccountsPage() {
 
   // load workspaces once
   useEffect(() => {
-    api
-      .get<{ data: InstantlyWorkspaceRef[] }>("/instantly/workspaces")
-      .then((r) => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const r = await api.get<{ data: InstantlyWorkspaceRef[] }>("/instantly/workspaces");
+        if (cancelled) return;
         setWorkspaces(r.data);
         if (r.data.length) setWs((cur) => cur || r.data[0].workspace_id);
-      })
-      .catch((e) => setWsError(e instanceof ApiError ? e.message : "Failed to load workspaces"));
+      } catch (e) {
+        if (!cancelled) setWsError(e instanceof ApiError ? e.message : "Failed to load workspaces");
+      } finally {
+        if (!cancelled) setWsLoading(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // debounce search
@@ -247,7 +258,11 @@ export default function EmailAccountsPage() {
           onChange={(e) => setWs(e.target.value)}
           className="w-auto min-w-[200px]"
         >
-          {workspaces.length === 0 && <option value="">No connected workspaces</option>}
+          {wsLoading ? (
+            <option value="">Loading workspaces…</option>
+          ) : workspaces.length === 0 ? (
+            <option value="">No connected workspaces</option>
+          ) : null}
           {workspaces.map((w) => (
             <option key={w.workspace_id} value={w.workspace_id}>
               {w.name} ({w.code})
@@ -294,14 +309,23 @@ export default function EmailAccountsPage() {
         </Select>
 
         <div className="ml-auto text-xs text-[var(--text-muted)]">
-          {loading ? "Loading…" : `${visibleRows.length}${cursor ? "+" : ""} shown`}
+          {loading
+            ? "Loading…"
+            : typeFilter
+              ? `${visibleRows.length} of ${rows.length} loaded`
+              : `${rows.length} loaded${cursor ? " · more available" : ""}`}
         </div>
       </div>
 
       {listError && <ErrorNote message={listError} />}
 
-      {loading ? (
+      {wsLoading || loading ? (
         <Spinner />
+      ) : workspaces.length === 0 ? (
+        <EmptyState
+          title="No connected workspaces"
+          hint="Connect an Instantly workspace under Integrations first."
+        />
       ) : visibleRows.length === 0 ? (
         <EmptyState title="No accounts match" hint="Try a different workspace, tag, or filter." />
       ) : (
@@ -355,10 +379,15 @@ export default function EmailAccountsPage() {
           </Table>
 
           {cursor && (
-            <div className="mt-4 flex justify-center">
+            <div className="mt-4 flex flex-col items-center gap-1.5">
               <Button onClick={loadMore} disabled={loadingMore}>
                 {loadingMore ? "Loading…" : "Load more"}
               </Button>
+              {typeFilter && (
+                <span className="text-[11px] text-[var(--text-faint)]">
+                  The type filter applies to loaded rows only — load more to include later pages.
+                </span>
+              )}
             </div>
           )}
         </>

@@ -125,9 +125,16 @@ export default function IntegrationsPage() {
               <div className="flex items-center justify-between">
                 <span className="font-medium">
                   {label(c.provider)}
-                  {c.workspace && <span className="text-[var(--text-muted)]"> · {c.workspace}</span>}
+                  <span className="text-[var(--text-muted)]">
+                    {" · "}
+                    {c.workspace ?? c.workspace_name_remote ?? "(unlinked workspace)"}
+                  </span>
                 </span>
-                <Badge tone={tone(c.status)}>{c.status_label}</Badge>
+                {c.status === "not_configured" && c.has_credentials ? (
+                  <Badge tone="neutral">Key stored</Badge>
+                ) : (
+                  <Badge tone={tone(c.status)}>{c.status_label}</Badge>
+                )}
               </div>
 
               {c.observed ? (
@@ -147,7 +154,11 @@ export default function IntegrationsPage() {
                 </div>
               ) : (
                 <div className="mt-3 text-xs text-[var(--text-muted)]">
-                  {c.has_credentials ? "Key stored — run a sync to pull data." : "Not configured."}
+                  {c.last_success_at
+                    ? "Connected — last sync returned no account data."
+                    : c.has_credentials
+                      ? "Key stored — run a sync to pull data."
+                      : "Not configured."}
                 </div>
               )}
 

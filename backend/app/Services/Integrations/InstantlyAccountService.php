@@ -126,7 +126,7 @@ class InstantlyAccountService
             'email' => $email,
             'fields' => array_keys($body),
             'values' => $body,
-        ]);
+        ], entityType: 'instantly_account', entityId: $email);
 
         return $this->transformDetail($updated);
     }
@@ -137,7 +137,7 @@ class InstantlyAccountService
         $this->audit->log('instantly.account.paused', null, [
             'workspace' => $workspace->code ?? $workspace->name,
             'email' => $email,
-        ]);
+        ], entityType: 'instantly_account', entityId: $email);
 
         return $this->transformDetail($acct);
     }
@@ -148,7 +148,7 @@ class InstantlyAccountService
         $this->audit->log('instantly.account.resumed', null, [
             'workspace' => $workspace->code ?? $workspace->name,
             'email' => $email,
-        ]);
+        ], entityType: 'instantly_account', entityId: $email);
 
         return $this->transformDetail($acct);
     }
@@ -160,7 +160,7 @@ class InstantlyAccountService
         $this->audit->log($enable ? 'instantly.account.warmup_enabled' : 'instantly.account.warmup_disabled', null, [
             'workspace' => $workspace->code ?? $workspace->name,
             'email' => $email,
-        ]);
+        ], entityType: 'instantly_account', entityId: $email);
 
         return [
             'queued' => true,
