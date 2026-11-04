@@ -14,9 +14,10 @@ use Throwable;
 /**
  * Orchestrates read-only Instantly sync for a single workspace connection.
  *
- * Accounts are imported as provenance records with batch_mapping_confidence =
- * "unmapped". Batch membership is NEVER inferred from domain names — an operator
- * maps accounts to batches explicitly afterwards.
+ * Accounts are imported as provenance records. New mailboxes start "unmapped";
+ * AccountMappingService then assigns them to batches by Instantly provider (never
+ * by domain-name similarity). Existing mappings survive re-syncs, and mailboxes
+ * that disappear from Instantly are pruned.
  */
 class InstantlySyncService
 {
@@ -111,7 +112,7 @@ class InstantlySyncService
                 'status' => 'success',
                 'records_processed' => count($accounts) + count($campaigns),
                 'message' => sprintf(
-                    '%d accounts (%d active, %d error), %d campaigns imported (unmapped — pending batch assignment).',
+                    '%d accounts (%d active, %d error), %d campaigns synced.',
                     $observed['total'], $observed['active'], $observed['error'], count($campaigns),
                 ),
                 'finished_at' => now(),
@@ -130,21 +131,36 @@ class InstantlySyncService
 
     private function importAccounts(?Workspace $workspace, array $accounts): void
     {
+        $seen = [];
         foreach ($accounts as $a) {
             $email = $a['email'] ?? null;
             if (! $email) {
                 continue;
             }
-            ImportedRecord::updateOrCreate(
+            $seen[] = $email;
+
+            $record = ImportedRecord::firstOrNew(
                 ['source' => 'instantly', 'entity_type' => 'account', 'external_record_id' => $email],
-                [
-                    'workspace_id' => $workspace?->id,
-                    'batch_id' => null,                       // never auto-mapped
-                    'batch_mapping_confidence' => 'unmapped',
-                    'payload' => $this->sanitizeAccount($a),
-                    'imported_at' => now(),
-                ],
             );
+            if (! $record->exists || $record->workspace_id !== $workspace?->id) {
+                // New (or moved) mailbox: starts unmapped until AccountMappingService runs.
+                // Existing mappings are preserved — re-syncing must not wipe them.
+                $record->batch_id = null;
+                $record->batch_mapping_confidence = 'unmapped';
+            }
+            $record->workspace_id = $workspace?->id;
+            $record->payload = $this->sanitizeAccount($a);
+            $record->imported_at = now();
+            $record->save();
+        }
+
+        // Mailboxes removed from Instantly must not linger in counts.
+        if ($workspace) {
+            ImportedRecord::where('source', 'instantly')
+                ->where('entity_type', 'account')
+                ->where('workspace_id', $workspace->id)
+                ->whereNotIn('external_record_id', $seen ?: ['__none__'])
+                ->delete();
         }
     }
 
@@ -206,7 +222,7 @@ class InstantlySyncService
         return ['total' => count($accounts), 'active' => $active, 'error' => $error, 'paused' => $paused];
     }
 
-    private function statusFromError(Throwable $e): string
+    public function statusFromError(Throwable $e): string
     {
         $m = $e->getMessage();
         if (str_contains($m, '401')) {

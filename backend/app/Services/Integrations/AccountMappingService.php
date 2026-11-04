@@ -5,6 +5,7 @@ namespace App\Services\Integrations;
 use App\Models\AccountException;
 use App\Models\Batch;
 use App\Models\DailyActivity;
+use App\Models\Domain;
 use App\Models\EmailAccount;
 use App\Models\ImportedRecord;
 use App\Models\IntegrationConnection;
@@ -21,6 +22,7 @@ use Illuminate\Support\Facades\DB;
  *
  * Batch account counts and the per-account daily limit are then recomputed from
  * the live (instantly-sourced) mailboxes, so the dashboard reflects reality.
+ * Runs automatically after every sync (see DeliverabilityRefreshService).
  */
 class AccountMappingService
 {
@@ -34,7 +36,7 @@ class AccountMappingService
     {
         $batches = $workspace->batches()->get();
         if ($batches->isEmpty()) {
-            return ['mapped' => 0, 'skipped' => 0, 'note' => 'no batches'];
+            return ['mapped' => 0, 'skipped' => 0, 'batches' => 0, 'removed' => 0, 'note' => 'no batches'];
         }
 
         $dfyBatch = $batches->firstWhere('provider_type', 'google_dfy_gen2');
@@ -46,12 +48,21 @@ class AccountMappingService
             ->where('workspace_id', $workspace->id)
             ->get();
 
+        if ($imports->isEmpty()) {
+            // Nothing synced yet — keep the existing (audit) figures rather than zeroing them.
+            return ['mapped' => 0, 'skipped' => 0, 'batches' => 0, 'removed' => 0, 'note' => 'no synced accounts'];
+        }
+
         $mapped = 0;
         $skipped = 0;
-        $touched = [];
+        $removed = 0;
+        $seenEmails = [];
         $limitsByBatch = [];
+        $touched = [];
 
-        DB::transaction(function () use ($imports, $single, $dfyBatch, $smtpBatch, $workspace, &$mapped, &$skipped, &$touched, &$limitsByBatch) {
+        DB::transaction(function () use ($imports, $batches, $single, $dfyBatch, $smtpBatch, $workspace, &$mapped, &$skipped, &$removed, &$seenEmails, &$limitsByBatch, &$touched) {
+            $domainCache = [];
+
             foreach ($imports as $import) {
                 $p = $import->payload;
                 $email = $p['email'] ?? $import->external_record_id;
@@ -68,26 +79,34 @@ class AccountMappingService
                 }
 
                 [$status, $connection] = $this->mapStatus($p['status'] ?? null);
+                $domain = $this->domainFor($workspace, $target, $email, $p['provider'] ?? null, $domainCache);
 
-                $account = EmailAccount::updateOrCreate(
-                    ['source' => 'instantly', 'external_id' => $email],
-                    [
-                        'workspace_id' => $workspace->id,
-                        'batch_id' => $target->id,
-                        'email' => $email,
-                        'provider' => $p['provider'] ?? null,
-                        'status' => $status,
-                        'connection_status' => $connection,
-                        'warmup_enabled' => ($p['warmup_status'] ?? null) === 1,
-                        'last_error' => $this->errorText($p),
-                        'last_synced_at' => now(),
-                    ],
-                );
+                // withTrashed: the (source, external_id) unique index also covers
+                // soft-deleted rows, so a mailbox that comes back must be restored.
+                $account = EmailAccount::withTrashed()->firstOrNew(['source' => 'instantly', 'external_id' => $email]);
+                $account->fill([
+                    'workspace_id' => $workspace->id,
+                    'batch_id' => $target->id,
+                    'domain_id' => $domain?->id,
+                    'email' => $email,
+                    'provider' => $p['provider'] ?? null,
+                    'status' => $status,
+                    'connection_status' => $connection,
+                    'warmup_enabled' => ($p['warmup_status'] ?? null) === 1,
+                    'last_error' => $this->errorText($p),
+                    'last_synced_at' => now(),
+                ]);
+                $account->deleted_at = null;
+                $account->save();
+                $seenEmails[] = $email;
 
                 $import->update(['batch_id' => $target->id, 'batch_mapping_confidence' => 'high']);
 
                 if ($status === 'error') {
                     $this->recordException($target, $account, $p);
+                } else {
+                    // Account recovered in Instantly — close its open exceptions.
+                    $this->resolveExceptions(AccountException::where('email_account_id', $account->id));
                 }
 
                 if (is_numeric($p['daily_limit'] ?? null)) {
@@ -95,17 +114,73 @@ class AccountMappingService
                 }
 
                 $mapped++;
-                $touched[$target->id] = $target;
+                $touched[$target->id] = true;
             }
 
-            foreach ($touched as $batch) {
+            // Mailboxes no longer present in Instantly: soft-delete and close their exceptions.
+            $gone = EmailAccount::where('workspace_id', $workspace->id)
+                ->where('source', 'instantly')
+                ->whereNotIn('external_id', $seenEmails ?: ['__none__'])
+                ->get();
+            foreach ($gone as $account) {
+                $this->resolveExceptions(AccountException::where('email_account_id', $account->id));
+                $account->delete();
+                $removed++;
+            }
+
+            // Live data now backs this workspace, so the one-off Oct-30 audit
+            // sample exceptions no longer describe current state.
+            $this->resolveExceptions(
+                AccountException::where('workspace_id', $workspace->id)
+                    ->whereHas('emailAccount', fn ($q) => $q->withTrashed()->where('source', 'audit'))
+            );
+
+            // Recompute EVERY batch in the workspace, including ones that ended up
+            // with zero live mailboxes — otherwise stale audit counts survive.
+            foreach ($batches as $batch) {
                 $limits = $limitsByBatch[$batch->id] ?? [];
                 $avgLimit = count($limits) ? (int) round(array_sum($limits) / count($limits)) : null;
                 $this->recomputeBatch($batch, $avgLimit);
             }
         });
 
-        return ['mapped' => $mapped, 'skipped' => $skipped, 'batches' => count($touched)];
+        return [
+            'mapped' => $mapped,
+            'skipped' => $skipped,
+            'batches' => count($touched),
+            'removed' => $removed,
+        ];
+    }
+
+    /** Find/create the Domain row for a mailbox so batches show real domain counts. */
+    private function domainFor(Workspace $workspace, Batch $batch, string $email, ?string $provider, array &$cache): ?Domain
+    {
+        $name = strtolower(trim((string) substr(strrchr($email, '@') ?: '', 1)));
+        if ($name === '') {
+            return null;
+        }
+        if (isset($cache[$name])) {
+            return $cache[$name];
+        }
+
+        $domain = Domain::firstOrCreate(
+            ['workspace_id' => $workspace->id, 'name' => $name],
+            ['batch_id' => $batch->id, 'provider' => $provider],
+        );
+        if (! $domain->batch_id) {
+            $domain->update(['batch_id' => $batch->id]);
+        }
+
+        return $cache[$name] = $domain;
+    }
+
+    private function resolveExceptions($query): void
+    {
+        $query->where('status', '!=', 'resolved')->update([
+            'status' => 'resolved',
+            'resolved_at' => now(),
+            'updated_at' => now(),
+        ]);
     }
 
     private function recomputeBatch(Batch $batch, ?int $avgLimit): void

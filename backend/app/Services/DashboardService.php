@@ -125,6 +125,8 @@ class DashboardService
                 'total_batches' => $batches->count(),
             ],
             'phases' => [
+                // Setup was missing, so freshly created batches showed as 0 everywhere.
+                'setup' => $batches->where('phase', 'setup')->count(),
                 'warming_up' => $batches->where('phase', 'warmup')->count(),
                 'ramp' => $batches->where('phase', 'ramp')->count(),
                 'active' => $batches->where('phase', 'active')->count(),
