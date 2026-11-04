@@ -80,6 +80,34 @@ class SyncPipelineTest extends TestCase
         $this->assertSame(0, ImportedRecord::where('workspace_id', $conn->workspace_id)->whereNull('batch_id')->count());
     }
 
+    public function test_mixed_daily_limits_do_not_raise_false_over_sending(): void
+    {
+        // 10 SMTP mailboxes: 5 at 3/day, 5 at 8/day => true capacity 55, average 5.5.
+        $accounts = [];
+        for ($i = 1; $i <= 10; $i++) {
+            $accounts[] = ['email' => "s{$i}@fw-smtp.com", 'status' => 1, 'provider_code' => 1, 'daily_limit' => $i <= 5 ? 3 : 8];
+        }
+        // Each mailbox sends exactly its own limit yesterday (sent total 55).
+        Http::fake([
+            'api.instantly.ai/api/v2/workspaces/current' => Http::response(['id' => 'ws-fw', 'name' => 'Future works']),
+            'api.instantly.ai/api/v2/accounts/analytics/daily*' => Http::response(array_map(
+                fn ($a) => ['email_account' => $a['email'], 'date' => now()->subDay()->toDateString(), 'sent' => $a['daily_limit'], 'bounced' => 0, 'replies' => 0],
+                $accounts,
+            )),
+            'api.instantly.ai/api/v2/accounts*' => Http::response(['items' => $accounts, 'next_starting_after' => null]),
+            'api.instantly.ai/api/v2/campaigns*' => Http::response(['items' => [], 'next_starting_after' => null]),
+        ]);
+        $conn = $this->connection();
+
+        Sanctum::actingAs(User::where('email', 'admin@revcadence.local')->first());
+        $this->postJson("/api/integrations/{$conn->id}/sync")->assertOk();
+
+        $smtp = Batch::where('batch_id', 'FW-SMTP-01')->first();
+        $row = DailyActivity::where('batch_id', $smtp->id)->first();
+        $this->assertSame(55, $row->daily_capacity);
+        $this->assertFalse(BatchProblem::where('batch_id', $smtp->id)->where('rule_key', 'over_sending')->exists());
+    }
+
     public function test_failed_connect_marks_connection_disconnected_with_reason(): void
     {
         Http::fake(['api.instantly.ai/*' => Http::response(['error' => 'unauthorized'], 401)]);

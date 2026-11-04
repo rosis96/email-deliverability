@@ -33,10 +33,24 @@ class MetricsService
         return $activeAccounts * $limitPerAccount;
     }
 
+    /**
+     * Capacity for one day's record. Prefer the exact stored capacity (sum of
+     * each sending mailbox's own limit, written by the Instantly sync); fall
+     * back to active_accounts x per-account limit for manual/CSV rows.
+     */
+    private function rowCapacity(object $r): ?int
+    {
+        if (isset($r->daily_capacity) && $r->daily_capacity !== null) {
+            return (int) $r->daily_capacity;
+        }
+
+        return $this->capacity($r->active_accounts ?? null, $r->daily_limit_per_account ?? null);
+    }
+
     /** Derived metrics for a single day's record. */
     public function deriveDaily(DailyActivity $a): array
     {
-        $capacity = $this->capacity($a->active_accounts, $a->daily_limit_per_account);
+        $capacity = $this->rowCapacity($a);
 
         return [
             'capacity' => $capacity,
@@ -68,11 +82,7 @@ class MetricsService
         $hardBounces = $sum('hard_bounces');
 
         // Capacity sums only days where both active_accounts and limit are known.
-        $capacity = (int) $rows->sum(function ($r) {
-            $cap = $this->capacity($r->active_accounts, $r->daily_limit_per_account);
-
-            return $cap ?? 0;
-        });
+        $capacity = (int) $rows->sum(fn ($r) => $this->rowCapacity($r) ?? 0);
 
         return [
             'days_with_data' => $rows->count(),
