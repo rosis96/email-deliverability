@@ -258,6 +258,13 @@ class AccountMappingService
 
         $batchByEmail = $accounts->pluck('batch_id', 'email');
         $limitByBatch = Batch::whereIn('id', $accounts->pluck('batch_id')->unique())->pluck('active_daily_limit', 'id');
+        // Each mailbox's own Instantly daily limit (from the latest sync), so
+        // capacity is the true sum rather than count x an averaged limit.
+        $limitByEmail = ImportedRecord::where('source', 'instantly')
+            ->where('entity_type', 'account')
+            ->where('workspace_id', $workspace->id)
+            ->get(['external_record_id', 'payload'])
+            ->mapWithKeys(fn ($r) => [$r->external_record_id => is_numeric($r->payload['daily_limit'] ?? null) ? (int) $r->payload['daily_limit'] : null]);
         $emails = $accounts->pluck('email')->all();
 
         $end = CarbonImmutable::now();
@@ -286,12 +293,29 @@ class AccountMappingService
         $written = 0;
         foreach ($agg as $batchId => $byDate) {
             foreach ($byDate as $date => $v) {
+                $active = count($v['emails']);
+                $fallback = $limitByBatch[$batchId] ?? null;
+                $capacity = null;
+                if ($active > 0) {
+                    $capacity = 0;
+                    foreach (array_keys($v['emails']) as $email) {
+                        $limit = $limitByEmail[$email] ?? $fallback;
+                        if ($limit === null) {
+                            $capacity = null;   // unknown limit -> capacity unknown, never guessed
+                            break;
+                        }
+                        $capacity += $limit;
+                    }
+                }
+
                 DailyActivity::updateOrCreate(
                     ['batch_id' => $batchId, 'activity_date' => $date],
                     [
                         'workspace_id' => $workspace->id,
-                        'active_accounts' => count($v['emails']),
-                        'daily_limit_per_account' => $limitByBatch[$batchId] ?? null,
+                        'active_accounts' => $active,
+                        // Average of the SENDING mailboxes' limits (display only); capacity below is exact.
+                        'daily_limit_per_account' => ($capacity !== null && $active > 0) ? (int) round($capacity / $active) : $fallback,
+                        'daily_capacity' => $capacity,
                         'sent' => $v['sent'],
                         'replies' => $v['replies'],
                         'bounces' => $v['bounced'],

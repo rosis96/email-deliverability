@@ -36,6 +36,7 @@ class DailyActivity extends Model
             'connected_accounts' => 'integer',
             'sent' => 'integer',
             'daily_limit_per_account' => 'integer',
+            'daily_capacity' => 'integer',
             'replies' => 'integer',
             'positive_replies' => 'integer',
             'bounces' => 'integer',
