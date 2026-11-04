@@ -209,8 +209,14 @@ export function LinkCell({ href, children }: { href: string; children: ReactNode
 }
 
 /* --- Form primitives --- */
-const inputClass =
-  "w-full rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] outline-none transition focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60";
+const inputBase =
+  "rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-1.5 text-sm text-[var(--text)] outline-none transition focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60";
+
+// Default to full width, but let a caller's own width class (w-auto, w-56, …)
+// win. Previously "w-full" was always applied and beat "w-auto" in the
+// generated CSS, so filter dropdowns stretched across the whole row.
+const inputClass = (className: string) =>
+  `${/(^|\s)!?w-/.test(className) ? "" : "w-full "}${inputBase} ${className}`;
 
 export function Field({
   label,
@@ -231,7 +237,7 @@ export function Field({
 }
 
 export function Input({ className = "", ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} className={`${inputClass} ${className}`} />;
+  return <input {...props} className={inputClass(className)} />;
 }
 
 export function Select({
@@ -240,7 +246,7 @@ export function Select({
   ...props
 }: SelectHTMLAttributes<HTMLSelectElement> & { children: ReactNode }) {
   return (
-    <select {...props} className={`${inputClass} ${className}`}>
+    <select {...props} className={inputClass(className)}>
       {children}
     </select>
   );

@@ -5,20 +5,16 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Batch;
 use App\Models\BatchProblem;
-use App\Models\Recommendation;
 use App\Services\AuditLogger;
-use App\Services\ProblemDetectionService;
-use App\Services\RecommendationService;
+use App\Services\ProblemRecorder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class ProblemController extends Controller
 {
     public function __construct(
-        private ProblemDetectionService $detection,
-        private RecommendationService $recommendations,
+        private ProblemRecorder $recorder,
         private AuditLogger $audit,
     ) {}
 
@@ -105,52 +101,22 @@ class ProblemController extends Controller
      */
     public function detect(Batch $batch): JsonResponse
     {
-        $findings = $this->detection->evaluate($batch);
-        $created = [];
+        $result = $this->recorder->record($batch);
+        $findings = $result['findings'];
+        $created = $result['created'];
 
-        DB::transaction(function () use ($batch, $findings, &$created) {
-            foreach ($findings as $finding) {
-                $exists = BatchProblem::where('batch_id', $batch->id)
-                    ->where('rule_key', $finding['rule_key'])
-                    ->whereIn('status', BatchProblem::OPEN_STATES)
-                    ->exists();
-                if ($exists) {
-                    continue;
-                }
-
-                $problem = BatchProblem::create([
-                    'problem_code' => $this->nextCode(),
-                    'workspace_id' => $batch->workspace_id,
-                    'batch_id' => $batch->id,
-                    'rule_key' => $finding['rule_key'],
-                    'accounts_affected' => $finding['accounts_affected'],
-                    'severity' => $finding['severity'],
-                    'symptom' => $finding['symptom'],
-                    'evidence' => $finding['evidence'],
-                    'root_cause_status' => 'unknown',
-                    'approval_required' => $finding['approval_required'],
-                    'status' => 'open',
-                    'detected_at' => now(),
-                ]);
-
-                $rec = $this->recommendations->fromFinding($finding);
-                Recommendation::create(array_merge($rec, [
-                    'batch_problem_id' => $problem->id,
-                    'batch_id' => $batch->id,
-                    'workspace_id' => $batch->workspace_id,
-                    'status' => 'suggested',
-                ]));
-
-                $created[] = $problem;
-            }
-        });
-
-        $this->audit->log('problem.detection_run', $batch, ['created' => count($created), 'findings' => count($findings)]);
+        $this->audit->log('problem.detection_run', $batch, [
+            'created' => count($created),
+            'resolved' => $result['resolved'],
+            'findings' => count($findings),
+        ]);
 
         return response()->json([
             'findings' => $findings,
             'created' => $created,
-            'message' => count($created).' new problem(s) recorded from '.count($findings).' finding(s).',
+            'resolved' => $result['resolved'],
+            'message' => count($created).' new problem(s) recorded from '.count($findings).' finding(s).'
+                .($result['resolved'] ? " {$result['resolved']} cleared problem(s) auto-resolved." : ''),
         ]);
     }
 

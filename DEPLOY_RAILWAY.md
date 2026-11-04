@@ -98,8 +98,13 @@ build from a production `Dockerfile` committed in `backend/` and `frontend/`.
   set it and trigger a new frontend deploy (it's baked in at build, not runtime).
 - **Backend unhealthy** → check logs. Common causes: DB vars not resolving (wrong
   Postgres service name in `${{...}}`), or `APP_KEY` missing.
-- **Optional:** add a `queue` and `scheduler` worker service later (same repo/root,
-  override start command to `php artisan queue:work` / `schedule:work`) if you move
-  sync/detection to background jobs. Not required for the current manual-sync flow.
+- **Scheduler runs inside the backend container.** `deploy/entrypoint.sh` starts
+  `php artisan schedule:work` in the background, which runs `deliverability:refresh`
+  hourly: Instantly sync -> map mailboxes to batches -> pull 30-day daily activity ->
+  run problem detection (new problems recorded, cleared ones auto-resolved).
+  Run it on demand with `php artisan deliverability:refresh [WORKSPACE_CODE]`.
+  If you ever scale the backend to more than one replica, set `RUN_SCHEDULER=false`
+  on all but one (or move it to a dedicated worker service with start command
+  `php artisan schedule:work`).
 - **Local dev is unchanged** — `docker-compose.yml` and `docker/` still work for local,
   and running the host PHP/Next servers works as before.

@@ -46,6 +46,18 @@ fi
 php artisan config:cache || true
 php artisan route:cache || true
 
+# Files created by the root-run artisan calls above must stay writable by php-fpm.
+chown -R www-data:www-data storage bootstrap/cache || true
+
+# Laravel scheduler: runs `deliverability:refresh` hourly (Instantly sync ->
+# batch mapping -> daily analytics -> problem detection). Without this process
+# nothing scheduled ever runs. Set RUN_SCHEDULER=false to disable (e.g. if you
+# run a separate Railway cron/worker service instead).
+if [ "${RUN_SCHEDULER:-true}" != "false" ]; then
+    echo "[entrypoint] Starting scheduler (schedule:work) as www-data"
+    su -p -s /bin/sh www-data -c "cd /var/www/html && php artisan schedule:work" &
+fi
+
 echo "[entrypoint] Starting php-fpm + nginx on :$PORT"
 php-fpm -D
 exec nginx -g 'daemon off;'

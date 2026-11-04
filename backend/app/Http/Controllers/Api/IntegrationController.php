@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ImportedRecord;
 use App\Models\IntegrationConnection;
 use App\Services\AuditLogger;
+use App\Services\DeliverabilityRefreshService;
 use App\Services\Integrations\InstantlySyncService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,6 +16,7 @@ class IntegrationController extends Controller
 {
     public function __construct(
         private InstantlySyncService $instantly,
+        private DeliverabilityRefreshService $refresh,
         private AuditLogger $audit,
     ) {}
 
@@ -50,13 +52,27 @@ class IntegrationController extends Controller
         try {
             $ws = $this->instantly->verify($conn);
         } catch (\Throwable $e) {
-            return response()->json(['message' => $e->getMessage(), 'connection' => $this->payload($conn->fresh())], 422);
+            // Record the failure so the card shows "Disconnected" + the reason,
+            // instead of a misleading "Key stored".
+            $conn->update(['status' => $this->instantly->statusFromError($e), 'last_error' => $e->getMessage()]);
+
+            return response()->json(['message' => $e->getMessage(), 'connection' => $this->payload($conn->fresh('workspace'))], 422);
         }
 
         $this->audit->log('integration.connected', $conn, ['provider' => $data['provider'], 'workspace_external_id' => $ws['id'] ?? null]);
 
+        // Pull data straight away so a newly connected workspace isn't empty until the next hourly run.
+        @set_time_limit(110);
+        $message = 'Connected to Instantly workspace "'.($ws['name'] ?? 'unknown').'".';
+        try {
+            $result = $this->refresh->refresh($conn);
+            $message .= ' '.$result['message'];
+        } catch (\Throwable $e) {
+            $message .= ' Initial sync failed: '.$e->getMessage();
+        }
+
         return response()->json([
-            'message' => 'Connected to Instantly workspace "'.($ws['name'] ?? 'unknown').'".',
+            'message' => $message,
             'connection' => $this->payload($conn->fresh('workspace')),
         ]);
     }
@@ -67,17 +83,28 @@ class IntegrationController extends Controller
             return response()->json(['message' => 'Sync is only implemented for Instantly so far.'], 422);
         }
 
+        // Sync + mapping + 30-day analytics can exceed PHP's default 30s on big workspaces.
+        @set_time_limit(110);
+
         try {
-            $log = $this->instantly->sync($integration);
+            $result = $this->refresh->refresh($integration);
         } catch (\Throwable $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json([
+                'message' => $e->getMessage(),
+                'connection' => $this->payload($integration->fresh('workspace')),
+            ], 422);
         }
 
-        $this->audit->log('integration.synced', $integration, ['records' => $log->records_processed]);
+        $this->audit->log('integration.synced', $integration, [
+            'mapped' => $result['mapping']['mapped'] ?? 0,
+            'removed' => $result['mapping']['removed'] ?? 0,
+            'activity_rows' => is_int($result['activity']) ? $result['activity'] : null,
+            'problems_created' => $result['problems']['created'] ?? 0,
+            'problems_resolved' => $result['problems']['resolved'] ?? 0,
+        ]);
 
         return response()->json([
-            'message' => $log->message,
-            'log' => $log,
+            'message' => $result['message'],
             'connection' => $this->payload($integration->fresh('workspace')),
         ]);
     }
@@ -89,9 +116,12 @@ class IntegrationController extends Controller
 
     private function payload(IntegrationConnection $c): array
     {
-        $unmapped = $c->provider === 'instantly' && $c->workspace_id
-            ? ImportedRecord::where('source', 'instantly')->where('entity_type', 'account')->where('workspace_id', $c->workspace_id)->count()
-            : null;
+        $imported = $unmapped = null;
+        if ($c->provider === 'instantly' && $c->workspace_id) {
+            $base = ImportedRecord::where('source', 'instantly')->where('entity_type', 'account')->where('workspace_id', $c->workspace_id);
+            $imported = (clone $base)->count();
+            $unmapped = (clone $base)->whereNull('batch_id')->count();
+        }
 
         return [
             'id' => $c->id,
@@ -105,7 +135,8 @@ class IntegrationController extends Controller
             'observed' => $c->config['observed'] ?? null,
             'campaigns_count' => $c->config['campaigns_count'] ?? null,
             'workspace_name_remote' => $c->config['workspace_name'] ?? null,
-            'imported_accounts' => $unmapped,
+            'imported_accounts' => $imported,
+            'unmapped_accounts' => $unmapped,
             // Never return the key itself.
             'has_credentials' => filled($c->credentials),
         ];

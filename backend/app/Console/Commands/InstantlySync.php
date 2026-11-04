@@ -10,7 +10,7 @@ class InstantlySync extends Command
 {
     protected $signature = 'instantly:sync {workspace? : Optional workspace code to limit the sync}';
 
-    protected $description = 'Sync all connected Instantly workspaces (read-only). Scheduled hourly.';
+    protected $description = 'Sync all connected Instantly workspaces (read-only). The hourly schedule uses deliverability:refresh, which also maps, pulls activity and runs detection.';
 
     public function handle(InstantlySyncService $svc): int
     {

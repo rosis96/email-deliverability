@@ -21,6 +21,7 @@ interface Conn {
   campaigns_count: number | null;
   workspace_name_remote: string | null;
   imported_accounts: number | null;
+  unmapped_accounts?: number | null;
   has_credentials: boolean;
 }
 
@@ -73,7 +74,7 @@ export default function IntegrationsPage() {
     <div>
       <PageHeader
         title="Integrations"
-        subtitle="Read-only provider adapters. API keys are stored encrypted server-side and never sent to the browser. Synced accounts import as unmapped — assign them to batches explicitly."
+        subtitle="Read-only provider adapters. API keys are stored encrypted server-side and never sent to the browser. Each sync maps mailboxes to batches by provider, refreshes batch counts and daily activity, and re-runs problem detection."
       />
 
       {msg && <div className="mb-4 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-4 py-2 text-sm">{msg}</div>}
@@ -120,7 +121,10 @@ export default function IntegrationsPage() {
         <Spinner />
       ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {data?.data.map((c) => (
+          {[...(data?.data ?? [])]
+            // Stable order (connected workspaces A–Z, then unlinked) so cards don't jump after a sync.
+            .sort((a, b) => (a.workspace ?? "~").localeCompare(b.workspace ?? "~") || a.provider.localeCompare(b.provider))
+            .map((c) => (
             <Card key={c.id} className="p-4">
               <div className="flex items-center justify-between">
                 <span className="font-medium">
@@ -130,7 +134,7 @@ export default function IntegrationsPage() {
                     {c.workspace ?? c.workspace_name_remote ?? "(unlinked workspace)"}
                   </span>
                 </span>
-                {c.status === "not_configured" && c.has_credentials ? (
+                {c.status === "not_configured" && c.has_credentials && !c.last_error ? (
                   <Badge tone="neutral">Key stored</Badge>
                 ) : (
                   <Badge tone={tone(c.status)}>{c.status_label}</Badge>
@@ -163,9 +167,15 @@ export default function IntegrationsPage() {
               )}
 
               {c.imported_accounts != null && c.imported_accounts > 0 && (
-                <div className="mt-2 text-xs text-[var(--warn)]">
-                  {num(c.imported_accounts)} accounts imported (unmapped — pending batch assignment)
-                </div>
+                (c.unmapped_accounts ?? 0) > 0 ? (
+                  <div className="mt-2 text-xs text-[var(--warn)]">
+                    {num(c.unmapped_accounts ?? 0)} of {num(c.imported_accounts)} accounts not yet mapped to a batch — run Sync now
+                  </div>
+                ) : (
+                  <div className="mt-2 text-xs text-[var(--ok)]">
+                    {num(c.imported_accounts)} accounts mapped to batches
+                  </div>
+                )
               )}
               {c.campaigns_count != null && (
                 <div className="mt-1 text-xs text-[var(--text-muted)]">{num(c.campaigns_count)} campaigns</div>
