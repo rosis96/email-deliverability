@@ -294,6 +294,19 @@ class InstantlyClient
         return $this->get('/campaigns/'.rawurlencode($id));
     }
 
+    /**
+     * Set a campaign's sending selection: explicit mailboxes + tags.
+     *
+     * @param  array{email_list: array, email_tag_list: array}  $selection
+     */
+    public function setCampaignSending(string $id, array $selection): array
+    {
+        return $this->write('patch', '/campaigns/'.rawurlencode($id), [
+            'email_list' => array_values(array_unique($selection['email_list'])),
+            'email_tag_list' => array_values(array_unique($selection['email_tag_list'])),
+        ]);
+    }
+
     /** Replace a campaign's sending accounts. */
     public function setCampaignSendingAccounts(string $id, array $emails): array
     {

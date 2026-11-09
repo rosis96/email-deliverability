@@ -47,6 +47,9 @@ class InstantlyBatchService
     /** Delay between per-mailbox writes to stay well inside Instantly's rate limit. */
     public int $throttleMicros = 150000;
 
+    /** @var array<string, array<string, array<int,string>>> */
+    private array $tagMembersCache = [];
+
     public function __construct(
         private AccountMappingService $mapping,
         private AuditLogger $audit,
@@ -75,7 +78,7 @@ class InstantlyBatchService
             'phase' => $phase,
             'accounts' => count($accounts),
             'actions' => $lines,
-            'campaigns' => array_map(fn ($c) => ['id' => $c['id'], 'name' => $c['name'], 'accounts_in_campaign' => $c['overlap']], $campaigns),
+            'campaigns' => array_map(fn ($c) => ['id' => $c['id'], 'name' => $c['name'], 'accounts_in_campaign' => $c['overlap'], 'selected_by' => $c['by_tag'] ? 'tag' : 'list'], $campaigns),
             'warnings' => $this->warnings($batch, $accounts, $phase, $limit),
         ];
     }
@@ -92,7 +95,7 @@ class InstantlyBatchService
             'to' => $to->batch_id,
             'from_accounts' => count($fromAccounts),
             'to_accounts' => count($toAccounts),
-            'campaigns' => array_map(fn ($c) => ['id' => $c['id'], 'name' => $c['name'], 'accounts_in_campaign' => $c['overlap']], $campaigns),
+            'campaigns' => array_map(fn ($c) => ['id' => $c['id'], 'name' => $c['name'], 'accounts_in_campaign' => $c['overlap'], 'selected_by' => $c['by_tag'] ? 'tag' : 'list'], $campaigns),
             'actions' => [
                 "In each campaign below, replace {$from->batch_id}'s mailboxes with {$to->batch_id}'s ".count($toAccounts).' mailboxes',
                 "{$to->batch_id}: warmup ON, daily limit ".($to->active_daily_limit ?? 'unchanged').', resume paused, phase -> Active',
@@ -238,9 +241,7 @@ class InstantlyBatchService
 
         foreach ($campaigns as $c) {
             try {
-                $list = array_values(array_diff($c['email_list'], $fromEmails));
-                $list = array_values(array_unique(array_merge($list, $toEmails)));
-                $client->setCampaignSendingAccounts($c['id'], $list);
+                $client->setCampaignSending($c['id'], $this->reselect($from->workspace, $c, $fromEmails, $toEmails));
                 $this->step($op, "Campaign \"{$c['name']}\": swapped {$c['overlap']} {$from->batch_id} mailbox(es) for ".count($toEmails)." {$to->batch_id} mailbox(es).");
             } catch (Throwable $e) {
                 $this->fail($op, "Campaign \"{$c['name']}\": ".$e->getMessage());
@@ -294,8 +295,8 @@ class InstantlyBatchService
         }
         foreach ($campaigns as $c) {
             try {
-                $client->setCampaignSendingAccounts($c['id'], array_values(array_diff($c['email_list'], $emails)));
-                $op->note("Removed {$c['overlap']} mailbox(es) from campaign \"{$c['name']}\".");
+                $client->setCampaignSending($c['id'], $this->reselect($workspace, $c, $emails));
+                $op->note("Removed {$c['overlap']} mailbox(es) from campaign \"{$c['name']}\"".($c['by_tag'] ? ' (tag selection replaced by an explicit list)' : '').'.');
             } catch (Throwable $e) {
                 $this->fail($op, "Campaign \"{$c['name']}\": ".$e->getMessage());
             }
@@ -436,25 +437,89 @@ class InstantlyBatchService
         return $refs;
     }
 
-    /** Campaigns in the workspace whose sending accounts include any of $emails. */
+    /**
+     * Campaigns in the workspace that send from any of $emails — either listed
+     * directly (email_list) or selected through a tag (email_tag_list).
+     */
     private function campaignsUsing(Workspace $workspace, array $emails): array
     {
         if (! $emails) {
             return [];
         }
         $client = $this->client($workspace);
+        $members = $this->tagMembers($workspace);
         $set = array_flip(array_map('strtolower', $emails));
         $out = [];
         foreach (Campaign::where('workspace_id', $workspace->id)->whereNotNull('external_id')->get() as $c) {
             $full = $client->getCampaign($c->external_id);
             $list = array_values(array_filter($full['email_list'] ?? [], 'is_string'));
-            $overlap = count(array_filter($list, fn ($e) => isset($set[strtolower($e)])));
+            $tags = array_values(array_filter($full['email_tag_list'] ?? [], 'is_string'));
+            $senders = $list;
+            foreach ($tags as $t) {
+                $senders = array_merge($senders, $members[$t] ?? []);
+            }
+            $senders = array_values(array_unique(array_map('strtolower', $senders)));
+            $overlap = count(array_filter($senders, fn ($e) => isset($set[$e])));
             if ($overlap > 0) {
-                $out[] = ['id' => $c->external_id, 'name' => $full['name'] ?? $c->name, 'email_list' => $list, 'overlap' => $overlap];
+                $out[] = [
+                    'id' => $c->external_id, 'name' => $full['name'] ?? $c->name,
+                    'email_list' => $list, 'email_tag_list' => $tags, 'overlap' => $overlap,
+                    'by_tag' => count(array_filter($tags, fn ($t) => array_intersect(array_map('strtolower', $members[$t] ?? []), array_keys($set)))) > 0,
+                ];
             }
         }
 
         return $out;
+    }
+
+    /**
+     * New sending selection for a campaign after removing $remove and adding $add.
+     * A tag that would still pull in removed mailboxes is dropped, and the tag's
+     * OTHER mailboxes are listed explicitly instead — so every mailbox that was
+     * sending and isn't being removed keeps sending.
+     *
+     * @return array{email_list: array, email_tag_list: array}
+     */
+    private function reselect(Workspace $workspace, array $campaign, array $remove, array $add = []): array
+    {
+        $members = $this->tagMembers($workspace);
+        $rm = array_flip(array_map('strtolower', $remove));
+        $list = array_values(array_filter($campaign['email_list'], fn ($e) => ! isset($rm[strtolower($e)])));
+        $tags = [];
+        foreach ($campaign['email_tag_list'] as $t) {
+            $m = $members[$t] ?? [];
+            $hit = array_filter($m, fn ($e) => isset($rm[strtolower($e)]));
+            if ($hit) {
+                $list = array_merge($list, array_filter($m, fn ($e) => ! isset($rm[strtolower($e)])));
+            } else {
+                $tags[] = $t;
+            }
+        }
+
+        return [
+            'email_list' => array_values(array_unique(array_merge($list, $add))),
+            'email_tag_list' => array_values(array_unique($tags)),
+        ];
+    }
+
+    /** @return array<string, array<int,string>> Instantly tag id => mailbox emails in the workspace */
+    private function tagMembers(Workspace $workspace): array
+    {
+        if (isset($this->tagMembersCache[$workspace->id])) {
+            return $this->tagMembersCache[$workspace->id];
+        }
+        $map = [];
+        ImportedRecord::where('source', 'instantly')->where('entity_type', 'account')
+            ->where('workspace_id', $workspace->id)->get(['external_record_id', 'payload'])
+            ->each(function ($r) use (&$map) {
+                foreach ($r->payload['tags'] ?? [] as $t) {
+                    if (! empty($t['id'])) {
+                        $map[$t['id']][] = $r->external_record_id;
+                    }
+                }
+            });
+
+        return $this->tagMembersCache[$workspace->id] = $map;
     }
 
     private function limitFor(Batch $batch, string $phase): ?int

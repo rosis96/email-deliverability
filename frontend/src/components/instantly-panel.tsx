@@ -24,7 +24,7 @@ interface Preview {
   from_accounts?: number;
   to_accounts?: number;
   actions: string[];
-  campaigns: { id: string; name: string; accounts_in_campaign: number }[];
+  campaigns: { id: string; name: string; accounts_in_campaign: number; selected_by?: string }[];
   warnings: string[];
 }
 
@@ -204,6 +204,9 @@ export function InstantlyPanel({ batch, onChanged }: { batch: BatchRow; onChange
                 {preview.campaigns.map((c) => (
                   <div key={c.id}>
                     {c.name} — {num(c.accounts_in_campaign)} of this batch&apos;s mailboxes
+                    {c.selected_by === "tag" && (
+                      <span className="text-xs text-[var(--text-muted)]"> (selected by tag — the tag is replaced by an explicit list so other mailboxes keep sending)</span>
+                    )}
                   </div>
                 ))}
               </div>
