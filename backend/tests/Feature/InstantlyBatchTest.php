@@ -27,6 +27,8 @@ class InstantlyBatchTest extends TestCase
 
     private array $campaignList = [];
 
+    private array $campaignTags = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -76,10 +78,11 @@ class InstantlyBatchTest extends TestCase
                 return Http::response(['id' => 'tag-new', 'label' => $r['label']]);
             }
             if (str_contains($url, '/campaigns/c1') && $r->method() === 'GET') {
-                return Http::response(['id' => 'c1', 'name' => 'Outbound Q4', 'email_list' => $this->campaignList]);
+                return Http::response(['id' => 'c1', 'name' => 'Outbound Q4', 'email_list' => $this->campaignList, 'email_tag_list' => $this->campaignTags]);
             }
             if (str_contains($url, '/campaigns/c1') && $r->method() === 'PATCH') {
                 $this->campaignList = $r['email_list'];
+                $this->campaignTags = $r['email_tag_list'] ?? $this->campaignTags;
 
                 return Http::response(['id' => 'c1', 'email_list' => $this->campaignList]);
             }
@@ -164,6 +167,31 @@ class InstantlyBatchTest extends TestCase
         $this->assertEqualsCanonicalizing(["keep@x.com", "n@new.com"], $this->campaignList);
         $this->assertSame('resting', $old->fresh()->phase);
         $this->assertSame('active', $new->fresh()->phase);
+    }
+
+    public function test_tag_selected_campaign_keeps_other_mailboxes_when_batch_is_removed(): void
+    {
+        $this->fakeInstantly();
+        $smtp = Batch::where('batch_id', 'REV-SMTP-01')->first();
+        $dfy = Batch::where('batch_id', 'REV-DFY-01')->first();
+        // Both batches' mailboxes carry the shared tag "Batch 1:" used by the campaign.
+        $this->import('a@rev.com', ['Batch 1:']);
+        $this->import('g@rev-google.com', ['Batch 1:'], 'google');
+        app(AccountMappingService::class)->mapWorkspace($this->ws);
+        Campaign::create(['workspace_id' => $this->ws->id, 'external_id' => 'c1', 'name' => 'Outbound Q4', 'status' => 'active']);
+        $this->campaignList = [];
+        $this->campaignTags = ['tag-Batch 1:'];
+
+        $preview = $this->postJson("/api/batches/{$smtp->id}/instantly/preview", ['type' => 'stage', 'phase' => 'resting'])->assertOk();
+        $this->assertSame('tag', $preview->json('data.campaigns.0.selected_by'));
+
+        $res = $this->postJson("/api/batches/{$smtp->id}/instantly/apply", ['type' => 'stage', 'phase' => 'resting'])->assertStatus(202);
+        $this->assertSame('completed', BatchOperation::find($res->json('data.id'))->status);
+
+        // Tag dropped; the DFY mailbox that shared it keeps sending via the explicit list.
+        $this->assertSame([], $this->campaignTags);
+        $this->assertSame(['g@rev-google.com'], $this->campaignList);
+        $this->assertSame($dfy->id, EmailAccount::where('external_id', 'g@rev-google.com')->value('batch_id'));
     }
 
     public function test_viewer_cannot_apply(): void
