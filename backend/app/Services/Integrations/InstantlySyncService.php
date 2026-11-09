@@ -191,6 +191,13 @@ class InstantlySyncService
 
         return [
             'email' => $a['email'] ?? null,
+            // Instantly's own account id (if returned) — used for tag toggling.
+            'id' => $a['id'] ?? null,
+            // Tags drive batch membership: a tag whose label equals a batch ID.
+            'tags' => array_values(array_map(
+                fn (array $t) => ['id' => $t['id'] ?? null, 'label' => $t['label'] ?? ''],
+                array_filter($a['tags'] ?? [], 'is_array'),
+            )),
             'status_code' => $statusNum,
             'status' => self::ACCOUNT_STATUS[$statusNum] ?? 'unknown',
             'warmup_status' => $a['warmup_status'] ?? null,

@@ -8,6 +8,7 @@ import {
 import { useApi } from "@/lib/hooks";
 import { date, dateTime, dash, label, num, pct, tone } from "@/lib/format";
 import type { BatchRow } from "@/lib/types";
+import { InstantlyPanel } from "@/components/instantly-panel";
 
 interface Detail {
   header: BatchRow;
@@ -34,7 +35,7 @@ interface Detail {
   rotation_plan: { status: string; overlap_start: string | null; overlap_end: string | null } | null;
 }
 
-const TABS = ["Overview", "Accounts", "Domains", "Lifecycle", "Daily Activity", "Deliverability", "Placement", "Problems", "Rotation", "History"];
+const TABS = ["Overview", "Instantly", "Accounts", "Domains", "Lifecycle", "Daily Activity", "Deliverability", "Placement", "Problems", "Rotation", "History"];
 
 function Metric({ k, v }: { k: string; v: React.ReactNode }) {
   return (
@@ -60,10 +61,10 @@ function ActivityBlock({ title, a }: { title: string; a: Record<string, number |
 
 export default function BatchDetailPage() {
   const params = useParams<{ id: string }>();
-  const { data, error, loading } = useApi<{ data: Detail }>(`/batches/${params.id}`);
+  const { data, error, loading, reload } = useApi<{ data: Detail }>(`/batches/${params.id}`);
   const [tab, setTab] = useState("Overview");
 
-  if (loading) return <Spinner />;
+  if (loading && !data) return <Spinner />;
   if (error) return <ErrorNote message={error} />;
   if (!data) return <EmptyState title="Batch not found" />;
 
@@ -160,6 +161,8 @@ export default function BatchDetailPage() {
           )}
         </div>
       )}
+
+      {tab === "Instantly" && <InstantlyPanel batch={h} onChanged={reload} />}
 
       {tab === "Accounts" && (
         <AccountsTab exceptions={d.account_exceptions} />

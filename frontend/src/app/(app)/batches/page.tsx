@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { Badge, Dot, ErrorNote, LinkCell, PageHeader, Spinner, Table, Td, Th } from "@/components/ui";
 import { Icon } from "@/components/icons";
 import { useApi } from "@/lib/hooks";
@@ -93,12 +94,30 @@ export default function BatchesPage() {
   );
 
   const rows = data?.data ?? [];
+  const unassigned = useApi<{ data: { count: number }[] }>("/unassigned-accounts");
+  const unassignedTotal = (unassigned.data?.data ?? []).reduce((n, w) => n + w.count, 0);
 
   return (
     <div>
       <PageHeader
         title="Batch Management"
         subtitle="One row per batch — the primary unit of management. Individual mailboxes appear only inside batch details."
+        actions={
+          <>
+            <Link
+              href="/batches/unassigned"
+              className="rounded-lg border border-[var(--border-strong)] px-3 py-1.5 text-sm hover:bg-[var(--surface-2)]"
+            >
+              Unassigned mailboxes{unassignedTotal ? ` (${num(unassignedTotal)})` : ""}
+            </Link>
+            <Link
+              href="/batches/new"
+              className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm text-[var(--accent-fg)] hover:opacity-90"
+            >
+              New batch
+            </Link>
+          </>
+        }
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
