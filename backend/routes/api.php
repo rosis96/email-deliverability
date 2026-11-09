@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\BatchController;
 use App\Http\Controllers\Api\DailyActivityController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\InstantlyAccountController;
+use App\Http\Controllers\Api\InstantlyBatchController;
 use App\Http\Controllers\Api\IntegrationController;
 use App\Http\Controllers\Api\PlacementTestController;
 use App\Http\Controllers\Api\ProblemController;
@@ -54,6 +55,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/instantly/workspaces/{workspace}/tags', [InstantlyAccountController::class, 'tags']);
     Route::get('/instantly/workspaces/{workspace}/account', [InstantlyAccountController::class, 'show']);
 
+    // --- Batch <-> Instantly: reads + previews (any authenticated role) ---
+    Route::get('/batches/{batch}/mailboxes', [InstantlyBatchController::class, 'mailboxes']);
+    Route::get('/batches/{batch}/operations', [InstantlyBatchController::class, 'operations']);
+    Route::get('/batch-operations/{operation}', [InstantlyBatchController::class, 'operation']);
+    Route::get('/unassigned-accounts', [InstantlyBatchController::class, 'unassignedSummary']);
+    Route::get('/workspaces/{workspace}/unassigned-accounts', [InstantlyBatchController::class, 'unassigned']);
+    Route::post('/batches/{batch}/instantly/preview', [InstantlyBatchController::class, 'preview']);
+
     // --- Operational writes (super_admin, deliverability_manager, operator) ---
     Route::middleware('role:super_admin,deliverability_manager,operator')->group(function () {
         Route::post('/batches', [BatchController::class, 'store']);
@@ -93,5 +102,9 @@ Route::middleware('auth:sanctum')->group(function () {
         // Integration credentials + sync (read-only toward the provider).
         Route::post('/integrations/connect', [IntegrationController::class, 'connect']);
         Route::post('/integrations/{integration}/sync', [IntegrationController::class, 'sync']);
+
+        // Batch-wide writes to Instantly (tags, stage settings, campaign rotation).
+        Route::post('/batches/{batch}/instantly/apply', [InstantlyBatchController::class, 'apply']);
+        Route::post('/batches/{batch}/assign', [InstantlyBatchController::class, 'assign']);
     });
 });

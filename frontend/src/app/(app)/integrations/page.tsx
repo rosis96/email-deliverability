@@ -123,7 +123,7 @@ export default function IntegrationsPage() {
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
           {[...(data?.data ?? [])]
             // Stable order (connected workspaces A–Z, then unlinked) so cards don't jump after a sync.
-            .sort((a, b) => (a.workspace ?? "~").localeCompare(b.workspace ?? "~") || a.provider.localeCompare(b.provider))
+            .sort((a, b) => (!a.workspace ? 1 : 0) - (!b.workspace ? 1 : 0) || (a.workspace ?? "").localeCompare(b.workspace ?? "") || a.provider.localeCompare(b.provider))
             .map((c) => (
             <Card key={c.id} className="p-4">
               <div className="flex items-center justify-between">

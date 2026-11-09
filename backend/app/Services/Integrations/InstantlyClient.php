@@ -73,7 +73,8 @@ class InstantlyClient
         $pages = 0;
 
         do {
-            $query = ['limit' => 100];
+            // include_tags: batch membership is read from Instantly tags (tag label = batch ID).
+            $query = ['limit' => 100, 'include_tags' => 'true'];
             if ($cursor) {
                 $query['starting_after'] = $cursor;
             }
@@ -245,6 +246,60 @@ class InstantlyClient
         return $this->write('post', $path, ['emails' => array_values($emails)]);
     }
 
+    // ---------------------------------------------------------------------
+    // Batch-level writes: tags + campaign sending accounts
+    // ---------------------------------------------------------------------
+
+    /** Create a custom tag. Returns the tag ({id, label, ...}). 409 if the label exists. */
+    public function createCustomTag(string $label, ?string $description = null): array
+    {
+        return $this->write('post', '/custom-tags', array_filter(['label' => $label, 'description' => $description], fn ($v) => $v !== null));
+    }
+
+    /** Find a tag by label (case-insensitive), creating it if missing. Returns the tag id. */
+    public function ensureCustomTag(string $label, ?string $description = null): string
+    {
+        foreach ($this->listCustomTags() as $tag) {
+            if (strcasecmp(trim((string) ($tag['label'] ?? '')), trim($label)) === 0) {
+                return (string) $tag['id'];
+            }
+        }
+
+        return (string) ($this->createCustomTag($label, $description)['id'] ?? '');
+    }
+
+    /**
+     * Assign/unassign tags on email accounts (resource_type 1 = account).
+     * $resourceIds are account identifiers as Instantly returns them (see
+     * InstantlySyncService::accountRef — the account id when present, else email).
+     *
+     * @param  array<int,string>  $tagIds
+     * @param  array<int,string>  $resourceIds
+     */
+    public function toggleAccountTags(array $tagIds, array $resourceIds, bool $assign): void
+    {
+        foreach (array_chunk(array_values($resourceIds), 100) as $chunk) {
+            $this->write('post', '/custom-tags/toggle-resource', [
+                'tag_ids' => array_values($tagIds),
+                'resource_type' => 1,
+                'resource_ids' => $chunk,
+                'assign' => $assign,
+            ]);
+        }
+    }
+
+    /** Full campaign (includes email_list = the sending accounts). */
+    public function getCampaign(string $id): array
+    {
+        return $this->get('/campaigns/'.rawurlencode($id));
+    }
+
+    /** Replace a campaign's sending accounts. */
+    public function setCampaignSendingAccounts(string $id, array $emails): array
+    {
+        return $this->write('patch', '/campaigns/'.rawurlencode($id), ['email_list' => array_values(array_unique($emails))]);
+    }
+
     /**
      * Issue a write (POST/PATCH) and normalise error statuses the same way get()
      * does, so the service layer can surface a clear message (esp. 403 = the key
@@ -266,7 +321,10 @@ class InstantlyClient
             throw new RuntimeException('Instantly: this API key lacks write scope (403). Regenerate the key in Instantly with the accounts:update (or all:all) scope and reconnect the workspace.');
         }
         if ($res->status() === 404) {
-            throw new RuntimeException('Instantly: account not found (404).');
+            throw new RuntimeException('Instantly: resource not found (404) — '.$path);
+        }
+        if ($res->status() === 409) {
+            throw new RuntimeException('Instantly: already exists (409).');
         }
         if ($res->status() === 429) {
             throw new RuntimeException('Instantly: rate limit exceeded (429). Try again shortly.');

@@ -39,9 +39,13 @@ class AccountMappingService
             return ['mapped' => 0, 'skipped' => 0, 'batches' => 0, 'removed' => 0, 'note' => 'no batches'];
         }
 
-        $dfyBatch = $batches->firstWhere('provider_type', 'google_dfy_gen2');
-        $smtpBatch = $batches->first(fn (Batch $b) => in_array($b->provider_type, ['smtp', 'smtp_maildoso', 'other'], true));
-        $single = $batches->count() === 1 ? $batches->first() : null;
+        $byBatchId = $batches->keyBy(fn (Batch $b) => strtoupper($b->batch_id));
+        $byId = $batches->keyBy('id');
+        // Registered domains (entered when a batch is created) pin mailboxes to that batch.
+        $batchByDomain = Domain::where('workspace_id', $workspace->id)->whereNotNull('batch_id')
+            ->pluck('batch_id', 'name')->mapWithKeys(fn ($bid, $name) => [strtolower($name) => $bid]);
+        $existing = EmailAccount::where('workspace_id', $workspace->id)->where('source', 'instantly')
+            ->pluck('batch_id', 'external_id');
 
         $imports = ImportedRecord::where('source', 'instantly')
             ->where('entity_type', 'account')
@@ -55,12 +59,13 @@ class AccountMappingService
 
         $mapped = 0;
         $skipped = 0;
+        $unassigned = 0;
         $removed = 0;
         $seenEmails = [];
         $limitsByBatch = [];
         $touched = [];
 
-        DB::transaction(function () use ($imports, $batches, $single, $dfyBatch, $smtpBatch, $workspace, &$mapped, &$skipped, &$removed, &$seenEmails, &$limitsByBatch, &$touched) {
+        DB::transaction(function () use ($imports, $batches, $byBatchId, $byId, $batchByDomain, $existing, $workspace, &$mapped, &$skipped, &$unassigned, &$removed, &$seenEmails, &$limitsByBatch, &$touched) {
             $domainCache = [];
 
             foreach ($imports as $import) {
@@ -71,10 +76,13 @@ class AccountMappingService
                     continue;
                 }
 
-                $target = $single
-                    ?? (($p['provider'] ?? null) === 'google' ? ($dfyBatch ?? $smtpBatch) : ($smtpBatch ?? $dfyBatch));
+                [$target, $confidence] = $this->resolveTarget($p, $email, $batches, $byBatchId, $byId, $batchByDomain, $existing);
                 if (! $target) {
-                    $skipped++;
+                    // Ambiguous (e.g. two SMTP batches, no tag, unknown domain): leave it
+                    // in the Unassigned list for an operator instead of guessing.
+                    $import->update(['batch_id' => null, 'batch_mapping_confidence' => 'unmapped']);
+                    $seenEmails[] = $email;
+                    $unassigned++;
                     continue;
                 }
 
@@ -100,7 +108,7 @@ class AccountMappingService
                 $account->save();
                 $seenEmails[] = $email;
 
-                $import->update(['batch_id' => $target->id, 'batch_mapping_confidence' => 'high']);
+                $import->update(['batch_id' => $target->id, 'batch_mapping_confidence' => $confidence]);
 
                 if ($status === 'error') {
                     $this->recordException($target, $account, $p);
@@ -148,8 +156,112 @@ class AccountMappingService
             'mapped' => $mapped,
             'skipped' => $skipped,
             'batches' => count($touched),
+            'unassigned' => $unassigned,
             'removed' => $removed,
         ];
+    }
+
+    /**
+     * Decide which batch a mailbox belongs to, most to least certain:
+     *   1. an Instantly tag whose label equals a batch ID (e.g. "REV-SMTP-02")  -> high
+     *   2. it was already in a batch (sticky — never silently moves)            -> medium
+     *   3. its domain is registered on a batch (new mailboxes of a new batch)   -> high
+     *   4. the workspace has exactly ONE batch for its provider type            -> medium
+     *   5. otherwise unassigned (null)
+     *
+     * @return array{0: ?Batch, 1: string}
+     */
+    private function resolveTarget(array $p, string $email, $batches, $byBatchId, $byId, $batchByDomain, $existing): array
+    {
+        foreach ($p['tags'] ?? [] as $tag) {
+            $label = strtoupper(trim((string) ($tag['label'] ?? '')));
+            if ($label !== '' && isset($byBatchId[$label])) {
+                return [$byBatchId[$label], 'high'];
+            }
+        }
+
+        if (isset($existing[$email], $byId[$existing[$email]])) {
+            return [$byId[$existing[$email]], 'medium'];
+        }
+
+        $domain = strtolower((string) substr(strrchr($email, '@') ?: '', 1));
+        if ($domain !== '' && isset($batchByDomain[$domain], $byId[$batchByDomain[$domain]])) {
+            return [$byId[$batchByDomain[$domain]], 'high'];
+        }
+
+        if ($batches->count() === 1) {
+            return [$batches->first(), 'medium'];
+        }
+
+        $isGoogle = ($p['provider'] ?? null) === 'google';
+        $candidates = $batches->filter(fn (Batch $b) => $isGoogle
+            ? $b->provider_type === 'google_dfy_gen2'
+            : $b->provider_type !== 'google_dfy_gen2')
+            ->filter(fn (Batch $b) => ! in_array($b->phase, ['retired'], true));
+        if ($candidates->count() === 1) {
+            return [$candidates->first(), 'medium'];
+        }
+
+        return [null, 'unmapped'];
+    }
+
+    /**
+     * Operator assignment: put these mailboxes in $batch (app side). Returns the
+     * previous batch id for each mailbox that moved, so callers can untag it.
+     *
+     * @param  array<int,string>  $emails
+     * @return array<string,string> email => previous batch id
+     */
+    public function assignToBatch(Batch $batch, array $emails): array
+    {
+        $previous = [];
+        $touched = [$batch->id => $batch];
+
+        DB::transaction(function () use ($batch, $emails, &$previous, &$touched) {
+            $imports = ImportedRecord::where('source', 'instantly')->where('entity_type', 'account')
+                ->where('workspace_id', $batch->workspace_id)->whereIn('external_record_id', $emails)->get();
+            $domainCache = [];
+
+            foreach ($imports as $import) {
+                $p = $import->payload ?? [];
+                $email = $import->external_record_id;
+                if ($import->batch_id && $import->batch_id !== $batch->id) {
+                    $previous[$email] = $import->batch_id;
+                    $touched[$import->batch_id] = Batch::find($import->batch_id);
+                }
+
+                [$status, $connection] = $this->mapStatus($p['status'] ?? null);
+                $domain = $this->domainFor($batch->workspace, $batch, $email, $p['provider'] ?? null, $domainCache);
+                if ($domain && $domain->batch_id !== $batch->id) {
+                    $domain->update(['batch_id' => $batch->id]);
+                }
+                $account = EmailAccount::withTrashed()->firstOrNew(['source' => 'instantly', 'external_id' => $email]);
+                $account->fill([
+                    'workspace_id' => $batch->workspace_id,
+                    'batch_id' => $batch->id,
+                    'domain_id' => $domain?->id,
+                    'email' => $email,
+                    'provider' => $p['provider'] ?? null,
+                    'status' => $status,
+                    'connection_status' => $connection,
+                    'warmup_enabled' => ($p['warmup_status'] ?? null) === 1,
+                    'last_error' => $this->errorText($p),
+                    'last_synced_at' => $account->last_synced_at ?? now(),
+                ]);
+                $account->deleted_at = null;
+                $account->save();
+
+                // Exceptions follow the mailbox to its new batch.
+                AccountException::where('email_account_id', $account->id)->update(['batch_id' => $batch->id]);
+                $import->update(['batch_id' => $batch->id, 'batch_mapping_confidence' => 'high']);
+            }
+
+            foreach (array_filter($touched) as $b) {
+                $this->recomputeBatch($b, null);
+            }
+        });
+
+        return $previous;
     }
 
     /** Find/create the Domain row for a mailbox so batches show real domain counts. */

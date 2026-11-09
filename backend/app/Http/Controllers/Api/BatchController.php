@@ -85,7 +85,23 @@ class BatchController extends Controller
 
         $this->audit->log('batch.created', $batch, ['batch_id' => $batch->batch_id]);
 
-        return response()->json(['data' => $this->detail($batch->fresh())], 201);
+        // Optionally create the matching tag in Instantly (label = batch ID).
+        // Tagging mailboxes with it is what links them to this batch on sync.
+        $tagMessage = null;
+        if ($request->boolean('create_instantly_tag')) {
+            try {
+                (new \App\Services\Integrations\InstantlyClient(
+                    (string) \App\Models\IntegrationConnection::where('provider', 'instantly')
+                        ->where('workspace_id', $batch->workspace_id)->first()?->apiKey()
+                ))->ensureCustomTag($batch->batch_id, 'RevCadence batch');
+                $tagMessage = "Tag \"{$batch->batch_id}\" created in Instantly — add it to this batch's mailboxes there, or assign them from Unassigned mailboxes.";
+                $this->audit->log('instantly.tag.created', $batch, ['label' => $batch->batch_id]);
+            } catch (\Throwable $e) {
+                $tagMessage = 'Batch saved, but the Instantly tag could not be created: '.$e->getMessage();
+            }
+        }
+
+        return response()->json(['data' => $this->detail($batch->fresh()), 'message' => $tagMessage], 201);
     }
 
     public function show(Batch $batch): JsonResponse

@@ -53,6 +53,7 @@ class DeliverabilityRefreshService
 
         $message = $log->message
             .sprintf(' Mapped %d mailbox(es) to batches', $mapping['mapped'] ?? 0)
+            .(! empty($mapping['unassigned']) ? ", {$mapping['unassigned']} need a batch (see Unassigned mailboxes)" : '')
             .(! empty($mapping['removed']) ? ", removed {$mapping['removed']} no longer in Instantly" : '')
             .'.'
             .(is_int($activity) ? " {$activity} daily activity row(s) updated." : '')

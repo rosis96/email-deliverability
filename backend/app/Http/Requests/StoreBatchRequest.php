@@ -31,6 +31,8 @@ class StoreBatchRequest extends FormRequest
             'lifecycle_days' => ['nullable', 'integer', 'min:1', 'max:3650'],
             'batch_owner' => ['nullable', 'string', 'max:255'],
             'notes' => ['nullable', 'string'],
+            // Create the batch's tag (label = batch ID) in Instantly right away.
+            'create_instantly_tag' => ['sometimes', 'boolean'],
         ];
     }
 
