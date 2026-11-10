@@ -31,7 +31,9 @@ class DashboardController extends Controller
 
         // --- Filters ---
         if ($ws = $request->query('workspace')) {
-            $query->whereHas('workspace', fn ($q) => $q->where('code', $ws)->orWhere('id', $ws));
+     $query->whereHas('workspace', fn ($q) => \Illuminate\Support\Str::isUuid($ws)
+    ? $q->where('id', $ws)
+    : $q->where('code', $ws));
         }
         if ($provider = $request->query('provider')) {
             $query->where('provider_type', $provider);
