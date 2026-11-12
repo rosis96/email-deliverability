@@ -8,22 +8,9 @@ import { useTheme } from "./theme";
 import { Icon } from "./icons";
 
 const NAV = [
-  { href: "/overview", label: "Overview", icon: "overview" },
-  { href: "/workspaces", label: "Workspaces", icon: "workspaces" },
-  { href: "/batches", label: "Batch Management", icon: "batches" },
-  { href: "/account-health", label: "Account Health", icon: "health" },
-  { href: "/email-accounts", label: "Email Accounts", icon: "mail" },
-  { href: "/deliverability", label: "Deliverability", icon: "deliverability" },
-  { href: "/lifecycle", label: "Warmup & Lifecycle", icon: "lifecycle" },
-  { href: "/activity", label: "Daily Activity", icon: "activity" },
-  { href: "/problems", label: "Problems & Incidents", icon: "problems" },
-  { href: "/rotation", label: "Rotation Planner", icon: "rotation" },
-  { href: "/placement-tests", label: "Placement Tests", icon: "placement" },
-  { href: "/domains", label: "Domain & DNS", icon: "domains" },
-  { href: "/reports", label: "Reports & Analytics", icon: "reports" },
+  { href: "/email-accounts", label: "Dashboard", icon: "mail" },
   { href: "/integrations", label: "Integrations", icon: "integrations" },
   { href: "/settings", label: "Settings", icon: "settings" },
-  { href: "/audit", label: "Audit Logs", icon: "audit" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
