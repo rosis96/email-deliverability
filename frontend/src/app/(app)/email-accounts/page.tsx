@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MailboxOverview } from "@/components/mailbox-overview";
+import { BulkBar, type BulkSelection } from "@/components/bulk-bar";
 import {
   Badge,
   Button,
@@ -21,6 +23,7 @@ import {
 } from "@/components/ui";
 import { Icon } from "@/components/icons";
 import { api, ApiError } from "@/lib/api";
+import { num } from "@/lib/format";
 import { useAuth } from "@/lib/auth";
 import type {
   InstantlyAccountDetail,
@@ -110,6 +113,14 @@ export default function EmailAccountsPage() {
   // drawer
   const [openEmail, setOpenEmail] = useState<string | null>(null);
 
+  // bulk selection: explicit rows, or "everything matching the current filter"
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [allMatching, setAllMatching] = useState(false);
+  const [showOverview, setShowOverview] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [overviewKey, setOverviewKey] = useState(0);
+  const pendingTag = useRef<string | null>(null);
+
   // load workspaces once
   useEffect(() => {
     let cancelled = false;
@@ -146,7 +157,13 @@ export default function EmailAccountsPage() {
       setTagFilter("");
       try {
         const r = await api.get<{ data: InstantlyTag[] }>(`/instantly/workspaces/${ws}/tags`);
-        if (!cancelled) setTags(r.data);
+        if (!cancelled) {
+          setTags(r.data);
+          if (pendingTag.current) {
+            setTagFilter(pendingTag.current);
+            pendingTag.current = null;
+          }
+        }
       } catch {
         if (!cancelled) setTags([]);
       }
@@ -178,6 +195,8 @@ export default function EmailAccountsPage() {
       setListError(null);
       setRows([]);
       setCursor(null);
+      setSelected({});
+      setAllMatching(false);
       try {
         const r = await api.get<InstantlyListResponse>(
           `/instantly/workspaces/${ws}/accounts?${buildQuery()}`,
@@ -195,7 +214,7 @@ export default function EmailAccountsPage() {
     return () => {
       cancelled = true;
     };
-  }, [ws, buildQuery]);
+  }, [ws, buildQuery, reloadKey]);
 
   const loadMore = () => {
     if (!ws || !cursor) return;
@@ -242,14 +261,47 @@ export default function EmailAccountsPage() {
 
   const wsName = workspaces.find((w) => w.workspace_id === ws)?.name ?? "";
 
+  const chosen = visibleRows.filter((r) => selected[r.email]).map((r) => r.email);
+  const allVisibleChosen = visibleRows.length > 0 && chosen.length === visibleRows.length;
+  const tagLabel = tags.find((t) => t.id === tagFilter)?.label;
+  const statusLabel = STATUS_OPTIONS.find((o) => o.value === statusFilter)?.label;
+  const selection: BulkSelection | null = allMatching
+    ? {
+        scope: "filter",
+        filter: { tag_ids: tagFilter || undefined, status: statusFilter || undefined, search: debouncedSearch || undefined },
+        description: `All mailboxes in ${wsName}${tagLabel ? ` · batch “${tagLabel}”` : ""}${statusFilter ? ` · ${statusLabel}` : ""}${debouncedSearch ? ` · matching “${debouncedSearch}”` : ""}`,
+      }
+    : chosen.length
+      ? { scope: "emails", emails: chosen }
+      : null;
+
+  const pickFromOverview = (workspaceId: string, tagId: string | null) => {
+    setStatusFilter("");
+    setSearch("");
+    if (workspaceId === ws) {
+      setTagFilter(tagId ?? "");
+    } else {
+      pendingTag.current = tagId;
+      setWs(workspaceId);
+    }
+    if (typeof window !== "undefined") window.scrollTo({ top: 420, behavior: "smooth" });
+  };
+
   return (
     <div>
       <PageHeader
-        title="Email Accounts"
-        subtitle="Live view of Instantly mailboxes by tag. Edits are written directly to Instantly and recorded in Audit Logs."
+        title="Dashboard"
+        subtitle="Filter mailboxes by workspace and batch, then select rows (or a whole batch) and apply one change to all of them in Instantly."
       />
 
       {wsError && <ErrorNote message={wsError} />}
+
+      <div className="mb-2 flex justify-end">
+        <Button size="sm" variant="ghost" onClick={() => setShowOverview((v) => !v)}>
+          {showOverview ? "Hide overview" : "Show workspace / batch overview"}
+        </Button>
+      </div>
+      {showOverview && <MailboxOverview key={overviewKey} onPick={pickFromOverview} />}
 
       {/* Toolbar */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -300,7 +352,7 @@ export default function EmailAccountsPage() {
         </Select>
 
         <Select value={tagFilter} onChange={(e) => setTagFilter(e.target.value)} className="w-auto">
-          <option value="">All tags</option>
+          <option value="">All batches</option>
           {tags.map((t) => (
             <option key={t.id} value={t.id}>
               {t.label}
@@ -319,6 +371,28 @@ export default function EmailAccountsPage() {
 
       {listError && <ErrorNote message={listError} />}
 
+      {canEdit && selection && (
+        <BulkBar
+          ws={ws}
+          selection={selection}
+          tags={tags}
+          onClear={() => {
+            // Refresh the list so it shows the new values from Instantly.
+            setReloadKey((k) => k + 1);
+          }}
+          onDone={() => setOverviewKey((k) => k + 1)}
+        />
+      )}
+
+      {canEdit && allVisibleChosen && !allMatching && (cursor || tagFilter || statusFilter) && (
+        <div className="mb-3 rounded-lg bg-[var(--surface-2)] px-4 py-2 text-sm">
+          All {num(visibleRows.length)} loaded mailboxes are selected.{" "}
+          <button className="font-medium text-[var(--accent)] hover:underline" onClick={() => setAllMatching(true)}>
+            Select every mailbox {tagLabel ? `in batch “${tagLabel}”` : "matching this filter"} in {wsName}
+          </button>
+        </div>
+      )}
+
       {wsLoading || loading ? (
         <Spinner />
       ) : workspaces.length === 0 ? (
@@ -333,8 +407,21 @@ export default function EmailAccountsPage() {
           <Table>
             <thead>
               <tr>
+                {canEdit && (
+                  <Th>
+                    <input
+                      type="checkbox"
+                      aria-label="Select all loaded"
+                      checked={allVisibleChosen || allMatching}
+                      onChange={(e) => {
+                        setAllMatching(false);
+                        setSelected(e.target.checked ? Object.fromEntries(visibleRows.map((r) => [r.email, true])) : {});
+                      }}
+                    />
+                  </Th>
+                )}
                 <Th>Email</Th>
-                <Th>Tags</Th>
+                <Th>Batch</Th>
                 <Th>Type</Th>
                 <Th>Warmup</Th>
                 <Th>Daily</Th>
@@ -348,6 +435,20 @@ export default function EmailAccountsPage() {
                   onClick={() => setOpenEmail(r.email)}
                   className="cursor-pointer hover:bg-[var(--surface-2)]"
                 >
+                  {canEdit && (
+                    <Td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${r.email}`}
+                        checked={allMatching || !!selected[r.email]}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          setAllMatching(false);
+                          setSelected((s) => ({ ...s, [r.email]: e.target.checked }));
+                        }}
+                      />
+                    </Td>
+                  )}
                   <Td className="font-medium">{r.email}</Td>
                   <Td>
                     <div className="flex flex-wrap gap-1">

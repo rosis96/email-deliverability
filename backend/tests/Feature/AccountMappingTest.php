@@ -122,4 +122,12 @@ class AccountMappingTest extends TestCase
         $res = $this->getJson('/api/dashboard/overview')->assertOk();
         $this->assertSame(Batch::where('phase', 'setup')->count(), $res->json('phases.setup'));
     }
+
+    public function test_batch_table_filters_by_workspace_code_or_id(): void
+    {
+        $this->actingAs(\App\Models\User::first(), 'sanctum');
+        $ws = Workspace::where('code', 'BS')->first();
+        $this->getJson('/api/dashboard/batches?workspace=BS')->assertOk()->assertJsonPath('data.0.batch_id', 'BS-SMTP-01');
+        $this->getJson('/api/dashboard/batches?workspace='.$ws->id)->assertOk()->assertJsonPath('meta.total', 1);
+    }
 }
