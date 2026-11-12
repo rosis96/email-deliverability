@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\InstantlyAccountController;
 use App\Http\Controllers\Api\InstantlyBatchController;
 use App\Http\Controllers\Api\IntegrationController;
+use App\Http\Controllers\Api\MailboxController;
 use App\Http\Controllers\Api\PlacementTestController;
 use App\Http\Controllers\Api\ProblemController;
 use App\Http\Controllers\Api\RotationController;
@@ -63,6 +64,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/workspaces/{workspace}/unassigned-accounts', [InstantlyBatchController::class, 'unassigned']);
     Route::post('/batches/{batch}/instantly/preview', [InstantlyBatchController::class, 'preview']);
 
+    // --- Mailbox overview + bulk-operation status (any authenticated role) ---
+    Route::get('/mailboxes/summary', [MailboxController::class, 'summary']);
+    Route::get('/instantly/workspaces/{workspace}/bulk-operations', [MailboxController::class, 'operations']);
+    Route::get('/mailbox-operations/{operation}', [MailboxController::class, 'operation']);
+
     // --- Operational writes (super_admin, deliverability_manager, operator) ---
     Route::middleware('role:super_admin,deliverability_manager,operator')->group(function () {
         Route::post('/batches', [BatchController::class, 'store']);
@@ -91,6 +97,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/instantly/workspaces/{workspace}/account/pause', [InstantlyAccountController::class, 'pause']);
         Route::post('/instantly/workspaces/{workspace}/account/resume', [InstantlyAccountController::class, 'resume']);
         Route::post('/instantly/workspaces/{workspace}/account/warmup', [InstantlyAccountController::class, 'warmup']);
+        // Bulk edit many mailboxes (selection / whole tag / filter).
+        Route::post('/instantly/workspaces/{workspace}/bulk', [MailboxController::class, 'bulk']);
     });
 
     // --- Decisions restricted to managers/admins ---
