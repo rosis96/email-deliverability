@@ -9,6 +9,7 @@ import { Icon } from "./icons";
 
 const NAV = [
   { href: "/email-accounts", label: "Dashboard", icon: "mail" },
+  { href: "/infrastructure", label: "Infrastructure", icon: "server" },
   { href: "/integrations", label: "Integrations", icon: "integrations" },
   { href: "/settings", label: "Settings", icon: "settings" },
 ];
